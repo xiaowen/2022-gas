@@ -15,11 +15,13 @@ from googleapiclient.http import MediaIoBaseDownload
 SPREADSHEET_ID = '1iiFiRZQ-UAY5y78g6YN6yD-MJB0lJZ0wqOLZIlw4-z0'
 SHEET_NAME_AZURE = 'Azure'
 SHEET_NAME_GCLOUD = 'GCloud'
+SHEET_NAME_GCLOUD_CUSTOM = 'GCloud-custom'
 
 # Google Cloud and Doc AI constants
 GCLOUD_PROJECT_ID = 'tensile-howl-307302'
 DOCAI_LOCATION = 'us'
 DOCAI_PROCESSOR_ID = 'be5c4fa46ae54842'
+DOCAI_CUSTOM_PROCESSOR_ID = 'e03f472481e331e4'
 
 # Azure constants
 AZURE_FORM_RECOGNIZER_ENDPOINT = "https://xiaowenx.cognitiveservices.azure.com/"
@@ -43,6 +45,24 @@ def append_to_sheet(sheet_name, file_name, image_date, price_per_gal, note):
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={ 'values': [[file_name, image_date, price_per_gal, note]]}).execute()
+
+def parse_receipt_gcloud_custom(image_content):
+    opts = ClientOptions(api_endpoint=f"{DOCAI_LOCATION}-documentai.googleapis.com")
+    client = documentai.DocumentProcessorServiceClient(client_options=opts)
+    name = client.processor_path(GCLOUD_PROJECT_ID, DOCAI_LOCATION, DOCAI_CUSTOM_PROCESSOR_ID)
+
+    raw_document = documentai.RawDocument(content=image_content, mime_type='image/jpeg')
+    request = documentai.ProcessRequest(name=name, raw_document=raw_document)
+    result = client.process_document(request=request)
+    document = result.document
+
+    ents = dict((e.type_, e.text_anchor.content) for e in document.entities)
+
+    price_per_gal = ents.get('price-per-gal', '')
+    price_per_gal = price_per_gal and price_per_gal.split()[-1]
+    note = 'Parsed: %s' % (ents)
+
+    return price_per_gal, note
 
 def parse_receipt_gcloud(image_content):
     opts = ClientOptions(api_endpoint=f"{DOCAI_LOCATION}-documentai.googleapis.com")
@@ -126,11 +146,14 @@ if __name__ == "__main__":
     # Get the list of images from disk
     files = os.listdir('photos')
 
-    for cloud in ['gcloud', 'azure']:
+    for cloud in ['gcloud', 'gcloud_custom', 'azure']:
         print('Working on: ' + cloud)
 
         # Get the existing info in the spreadsheet
-        sheet_name = dict(gcloud=SHEET_NAME_GCLOUD, azure=SHEET_NAME_AZURE)[cloud]
+        sheet_name = dict(
+            gcloud=SHEET_NAME_GCLOUD,
+            gcloud_custom=SHEET_NAME_GCLOUD_CUSTOM,
+            azure=SHEET_NAME_AZURE)[cloud]
         sheets_data = get_sheets_data(sheet_name)
 
         for file_name in files:
@@ -153,7 +176,9 @@ if __name__ == "__main__":
             # Parse the image
             if cloud == 'gcloud':
                 price_per_gal, note = parse_receipt_gcloud(image_content)
-            else:
+            elif cloud == 'gcloud_custom':
+                price_per_gal, note = parse_receipt_gcloud_custom(image_content)
+            elif cloud == 'azure':
                 price_per_gal, note = parse_receipt_azure(image_content)
 
             # Add results to spreadsheet
